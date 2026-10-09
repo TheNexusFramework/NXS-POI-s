@@ -1,0 +1,430 @@
+//@version=6
+indicator("NXS POI's", overlay=true, max_lines_count=500, max_labels_count=500)
+
+//============================================================================
+// HELPER FUNCTIONS
+//============================================================================
+get_style(s) => s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+get_spacer(n) =>
+    string s = ""
+    if n > 0
+        for i = 1 to n
+            s += "\n"
+    s
+
+f_hhmm_to_mins(hhmm_str) =>
+    h = str.tonumber(str.substring(hhmm_str, 0, 2))
+    m = str.tonumber(str.substring(hhmm_str, 2, 4))
+    (h * 60) + m
+
+f_in_window(mins, start_m, end_m) =>
+    start_m <= end_m ? (mins >= start_m and mins < end_m) : (mins >= start_m or mins < end_m)
+
+scale_price(proj_value, proj_anchor, chart_anchor, multiplier) =>
+    if na(proj_value) or na(proj_anchor) or na(chart_anchor) or proj_anchor == 0
+        na
+    else
+        pct_change = (proj_value - proj_anchor) / proj_anchor
+        chart_anchor * (1 + (pct_change * multiplier))
+
+f_get_liquid_anchor(start_mins, end_mins, tz) =>
+    var float anchor = na
+    curr_mins = (hour(time, tz) * 60) + minute(time, tz)
+    in_win = start_mins <= end_mins ? (curr_mins >= start_mins and curr_mins < end_mins) : (curr_mins >= start_mins or curr_mins < end_mins)
+    if in_win and not in_win[1]
+        anchor := open
+    anchor
+
+//============================================================================
+// INPUTS: 1. NXS POI (NATIVE MAP)
+//============================================================================
+g_ny = "NY Session Levels"
+show_ny_open = input.bool(true, "Show NY Open", group=g_ny)
+ny_open_color = input.color(color.white, "NY Open Color", group=g_ny)
+ny_open_width = input.int(2, "NY Open Width", minval=1, maxval=5, group=g_ny)
+ny_open_offset = input.int(6, "NY Open Label Offset", minval=0, maxval=1000, group=g_ny)
+
+show_ny_close = input.bool(true, "Show NY Close", group=g_ny)
+ny_close_color = input.color(color.orange, "NY Close Color", group=g_ny)
+ny_close_width = input.int(2, "NY Close Width", minval=1, maxval=5, group=g_ny)
+ny_close_style = input.string("Dotted", "NY Close Style", options=["Solid", "Dashed", "Dotted"], group=g_ny)
+ny_close_offset = input.int(6, "NY Close Label Offset", minval=0, maxval=1000, group=g_ny)
+
+g_on = "Overnight Globex Levels"
+show_on = input.bool(true, "Show Overnight H/L", group=g_on)
+on_h_color = input.color(color.new(color.yellow, 0), "ON High Color", group=g_on)
+on_h_width = input.int(2, "ON High Width", minval=1, maxval=5, group=g_on)
+on_h_style = input.string("Solid", "ON High Style", options=["Solid", "Dashed", "Dotted"], group=g_on)
+on_h_offset = input.int(2, "ON High Label Offset", minval=0, maxval=1000, group=g_on)
+
+on_l_color = input.color(color.new(color.yellow, 0), "ON Low Color", group=g_on)
+on_l_width = input.int(2, "ON Low Width", minval=1, maxval=5, group=g_on)
+on_l_style = input.string("Solid", "ON Low Style", options=["Solid", "Dashed", "Dotted"], group=g_on)
+on_l_offset = input.int(2, "ON Low Label Offset", minval=0, maxval=1000, group=g_on)
+
+g_w = "Weekly Levels"
+show_w = input.bool(true, "Show Weekly H/L", group=g_w)
+w_h_color = input.color(color.new(#089981, 0), "W High Color", group=g_w)
+w_h_width = input.int(2, "W High Width", minval=1, maxval=5, group=g_w)
+w_h_style = input.string("Solid", "W High Style", options=["Solid", "Dashed", "Dotted"], group=g_w)
+w_h_offset = input.int(60, "W High Label Offset", minval=0, maxval=1000, group=g_w)
+
+w_l_color = input.color(color.new(#089981, 0), "W Low Color", group=g_w)
+w_l_width = input.int(2, "W Low Width", minval=1, maxval=5, group=g_w)
+w_l_style = input.string("Solid", "W Low Style", options=["Solid", "Dashed", "Dotted"], group=g_w)
+w_l_offset = input.int(60, "W Low Label Offset", minval=0, maxval=1000, group=g_w)
+
+g_m = "Monthly Levels"
+show_m = input.bool(false, "Show Monthly H/L", group=g_m)
+m_h_color = input.color(color.new(#4caf50, 0), "M High Color", group=g_m)
+m_h_width = input.int(2, "M High Width", minval=1, maxval=5, group=g_m)
+m_h_style = input.string("Solid", "M High Style", options=["Solid", "Dashed", "Dotted"], group=g_m)
+m_h_offset = input.int(120, "M High Label Offset", minval=0, maxval=1000, group=g_m)
+
+m_l_color = input.color(color.new(#4caf50, 0), "M Low Color", group=g_m)
+m_l_width = input.int(2, "M Low Width", minval=1, maxval=5, group=g_m)
+m_l_style = input.string("Solid", "M Low Style", options=["Solid", "Dashed", "Dotted"], group=g_m)
+m_l_offset = input.int(120, "M Low Label Offset", minval=0, maxval=1000, group=g_m)
+
+g_q = "Quarterly Levels"
+show_q = input.bool(false, "Show Quarterly H/L", group=g_q)
+q_h_color = input.color(color.new(#808080, 0), "Q High Color", group=g_q)
+q_h_width = input.int(2, "Q High Width", minval=1, maxval=5, group=g_q)
+q_h_style = input.string("Solid", "Q High Style", options=["Solid", "Dashed", "Dotted"], group=g_q)
+q_h_offset = input.int(180, "Q High Label Offset", minval=0, maxval=1000, group=g_q)
+
+q_l_color = input.color(color.new(#808080, 0), "Q Low Color", group=g_q)
+q_l_width = input.int(2, "Q Low Width", minval=1, maxval=5, group=g_q)
+q_l_style = input.string("Solid", "Q Low Style", options=["Solid", "Dashed", "Dotted"], group=g_q)
+q_l_offset = input.int(180, "Q Low Label Offset", minval=0, maxval=1000, group=g_q)
+
+g_pct = "Dashboard & Prev Close"
+show_pc = input.bool(true, "Show Prev Close Level", group=g_pct)
+pc_color = input.color(color.new(color.gray, 0), "Prev Close Color", group=g_pct)
+pc_width = input.int(2, "Prev Close Width", minval=1, maxval=5, group=g_pct)
+pc_style = input.string("Dashed", "Prev Close Style", options=["Solid", "Dashed", "Dotted"], group=g_pct)
+pc_offset = input.int(8, "Prev Close Label Offset", minval=0, maxval=1000, group=g_pct)
+
+show_pct_table = input.bool(true, "Show % Change Dashboard", group=g_pct)
+use_custom_sym = input.bool(false, "Use Custom Symbol (Off = Current Chart)", group=g_pct)
+pct_sym = input.symbol("AMEX:SPY", "Custom Symbol", group=g_pct)
+show_pct_d   = input.bool(true, "Show Daily", group=g_pct, inline="p1")
+show_pct_w   = input.bool(true, "Show Weekly", group=g_pct, inline="p1")
+show_pct_m   = input.bool(true, "Show Monthly", group=g_pct, inline="p2")
+show_pct_q   = input.bool(true, "Show Quarterly", group=g_pct, inline="p2")
+show_pct_ytd = input.bool(true, "Show YTD", group=g_pct, inline="p3")
+
+pct_pos = input.string("Top Right", "Table Position", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group=g_pct)
+pct_size = input.string("Normal", "Table Text Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=g_pct)
+pct_y_shift = input.int(1, "Mobile UI Offset (Lines)", minval=0, maxval=10, group=g_pct)
+pct_pos_col = input.color(#00ff7e, "Positive Color", group=g_pct)
+pct_neg_col = input.color(#ff0000, "Negative Color", group=g_pct)
+
+g_vis = "Global Visuals"
+show_labels = input.bool(true, "Show All Labels", group=g_vis)
+
+//============================================================================
+// INPUTS: 2. NXS OPT (PDH / PDL ONLY)
+//============================================================================
+opt_grp = "Prior Session (OPT)"
+opt_show_pdh   = input.bool(true, "Show Prior High (PDH)", group=opt_grp)
+opt_show_pdl   = input.bool(true, "Show Prior Low (PDL)", group=opt_grp)
+opt_color_pdh  = input.color(#F23645, "PDH Color", group=opt_grp)
+opt_color_pdl  = input.color(#089981, "PDL Color", group=opt_grp)
+opt_line_style = input.string("Dashed", "PDH/PDL Style", options=["Solid", "Dashed", "Dotted"], group=opt_grp)
+opt_label_off  = input.int(5, "PDH/PDL Label Offset", minval=0, maxval=100, group=opt_grp)
+
+//============================================================================
+// INPUTS: 3. NXS SYMMETRY (2 SLOTS ONLY)
+//============================================================================
+sym_g_cmd = "Symmetry Anchor Commander"
+sym_rth_start = input.string("0931", "RTH Start (HHMM)", group=sym_g_cmd)
+sym_rth_end   = input.string("1600", "RTH End (HHMM)", group=sym_g_cmd)
+sym_use_on    = input.bool(true, "Enable Overnight (ON)", group=sym_g_cmd)
+sym_on_start  = input.string("1800", "ON Start (HHMM)", group=sym_g_cmd)
+sym_on_end    = input.string("0930", "ON End (HHMM)", group=sym_g_cmd)
+sym_tz        = input.string("America/New_York", "Timezone", group=sym_g_cmd)
+sym_use_eth   = input.bool(true, "Fetch Extended Hours", group=sym_g_cmd)
+
+sym_g_slots = "Symmetry Projections"
+sym_htf1_en   = input.bool(true,  "Slot #1", inline="a", group=sym_g_slots)
+sym_htf1_tf   = input.timeframe("1", "",   inline="a", group=sym_g_slots)
+sym_htf1_sym  = input.symbol("", "Symbol", inline="a", group=sym_g_slots)
+sym_htf1_mult = input.float(0.2, "x", inline="a", group=sym_g_slots, minval=0.1, maxval=50.0, step=0.1)
+sym_line1_col = input.color(color.new(color.purple, 0), "Color", inline="a", group=sym_g_slots)
+
+sym_htf2_en   = input.bool(false,  "Slot #2", inline="b", group=sym_g_slots)
+sym_htf2_tf   = input.timeframe("1","",   inline="b", group=sym_g_slots)
+sym_htf2_sym  = input.symbol("", "Symbol", inline="b", group=sym_g_slots)
+sym_htf2_mult = input.float(4.0, "x", inline="b", group=sym_g_slots, minval=0.1, maxval=50.0, step=0.1)
+sym_line2_col = input.color(color.new(color.blue, 0), "Color", inline="b", group=sym_g_slots)
+
+sym_line_w    = input.int(2, "Projection Line Width", minval=1, maxval=5, group=sym_g_slots)
+
+//============================================================================
+// GLOBAL TIME TRACKING
+//============================================================================
+ny_hour = hour(time, "America/New_York")
+ny_minute = minute(time, "America/New_York")
+prev_ny_hour = hour(time[1], "America/New_York")
+prev_ny_minute = minute(time[1], "America/New_York")
+
+currentTime = ny_hour * 100 + ny_minute
+prevTime = prev_ny_hour * 100 + prev_ny_minute
+int time_step = nz(time - time[1], 60000)
+
+//============================================================================
+// CORE 1: NXS POI LOGIC
+//============================================================================
+getPosition() =>
+    switch pct_pos
+        "Top Left" => position.top_left
+        "Top Center" => position.top_center
+        "Top Right" => position.top_right
+        "Middle Left" => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right" => position.middle_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right" => position.bottom_right
+        => position.top_right
+
+getTextSize() =>
+    switch pct_size
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Normal" => size.normal
+        "Large" => size.large
+        "Huge" => size.huge
+        => size.normal
+
+target_sym = use_custom_sym and pct_sym != "" ? pct_sym : syminfo.tickerid
+curr_close = request.security(target_sym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+prev_d   = request.security(target_sym, "D", close[1], lookahead=barmerge.lookahead_on)
+prev_w   = request.security(target_sym, "W", close[1], lookahead=barmerge.lookahead_on)
+prev_m   = request.security(target_sym, "1M", close[1], lookahead=barmerge.lookahead_on)
+prev_q   = request.security(target_sym, "3M", close[1], lookahead=barmerge.lookahead_on)
+prev_ytd = request.security(target_sym, "12M", close[1], lookahead=barmerge.lookahead_on)
+
+pct_d   = prev_d != 0 ? ((curr_close - prev_d) / prev_d) * 100 : 0
+pct_w   = prev_w != 0 ? ((curr_close - prev_w) / prev_w) * 100 : 0
+pct_m   = prev_m != 0 ? ((curr_close - prev_m) / prev_m) * 100 : 0
+pct_q   = prev_q != 0 ? ((curr_close - prev_q) / prev_q) * 100 : 0
+pct_ytd = prev_ytd != 0 ? ((curr_close - prev_ytd) / prev_ytd) * 100 : 0
+chart_prev_close = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+
+var int d_start = na
+if ta.change(time("D")) != 0 or na(d_start)
+    d_start := time
+
+is_globex = (ny_hour >= 18) or (ny_hour < 8)
+var float on_high = na
+var float on_low  = na
+var int on_start  = na 
+if ny_hour == 18 and prev_ny_hour != 18
+    on_high := high
+    on_low  := low
+    on_start := time 
+if is_globex
+    on_high := math.max(on_high, high)
+    on_low  := math.min(on_low, low)
+
+var float sessionOpen = na
+var label lbl_open = na
+var float sessionClose = na
+var line line_close = na
+var label lbl_close = na
+
+if currentTime >= 930 and prevTime < 930
+    sessionOpen := open
+if currentTime >= 1600 and prevTime < 1600
+    sessionClose := close[1]
+    if show_ny_close
+        line_close := line.new(time[1], sessionClose, time, sessionClose, xloc=xloc.bar_time, color=ny_close_color, width=ny_close_width, style=get_style(ny_close_style))
+
+[w_high, w_low, w_start] = request.security(syminfo.tickerid, "W", [high, low, time])
+[m_high, m_low, m_start] = request.security(syminfo.tickerid, "1M", [high, low, time])
+[q_high, q_low, q_start] = request.security(syminfo.tickerid, "3M", [high, low, time])
+
+var table pct_table = table.new(getPosition(), 5, 2, border_width=1, border_color=color.new(color.gray, 50))
+if show_pct_table and barstate.islast
+    table.clear(pct_table, 0, 0, 4, 1)
+    int c = 0
+    txt_sz = getTextSize()
+    bg_col = color.new(#1a1a1a, 100)
+    lbl_col = color.new(color.white, 30)
+    spacer = get_spacer(pct_y_shift)
+    
+    if show_pct_d
+        table.cell(pct_table, c, 0, spacer + "D", bgcolor=bg_col, text_color=lbl_col, text_size=txt_sz)
+        table.cell(pct_table, c, 1, (pct_d >= 0 ? "+" : "") + str.tostring(pct_d, "#.##") + "%", bgcolor=bg_col, text_color=pct_d >= 0 ? pct_pos_col : pct_neg_col, text_size=txt_sz)
+        c += 1
+    if show_pct_w
+        table.cell(pct_table, c, 0, spacer + "W", bgcolor=bg_col, text_color=lbl_col, text_size=txt_sz)
+        table.cell(pct_table, c, 1, (pct_w >= 0 ? "+" : "") + str.tostring(pct_w, "#.##") + "%", bgcolor=bg_col, text_color=pct_w >= 0 ? pct_pos_col : pct_neg_col, text_size=txt_sz)
+        c += 1
+    if show_pct_m
+        table.cell(pct_table, c, 0, spacer + "M", bgcolor=bg_col, text_color=lbl_col, text_size=txt_sz)
+        table.cell(pct_table, c, 1, (pct_m >= 0 ? "+" : "") + str.tostring(pct_m, "#.##") + "%", bgcolor=bg_col, text_color=pct_m >= 0 ? pct_pos_col : pct_neg_col, text_size=txt_sz)
+        c += 1
+    if show_pct_q
+        table.cell(pct_table, c, 0, spacer + "Q", bgcolor=bg_col, text_color=lbl_col, text_size=txt_sz)
+        table.cell(pct_table, c, 1, (pct_q >= 0 ? "+" : "") + str.tostring(pct_q, "#.##") + "%", bgcolor=bg_col, text_color=pct_q >= 0 ? pct_pos_col : pct_neg_col, text_size=txt_sz)
+        c += 1
+    if show_pct_ytd
+        table.cell(pct_table, c, 0, spacer + "YTD", bgcolor=bg_col, text_color=lbl_col, text_size=txt_sz)
+        table.cell(pct_table, c, 1, (pct_ytd >= 0 ? "+" : "") + str.tostring(pct_ytd, "#.##") + "%", bgcolor=bg_col, text_color=pct_ytd >= 0 ? pct_pos_col : pct_neg_col, text_size=txt_sz)
+        c += 1
+else if not show_pct_table and barstate.islast
+    table.clear(pct_table, 0, 0, 4, 1)
+
+plot(show_ny_open ? sessionOpen : na, title="NY Session Open", color=ny_open_color, linewidth=ny_open_width, style=plot.style_linebr)
+
+var line line_pc = na, var label lbl_pc = na
+var line line_on_h = na, var line line_on_l = na
+var label lbl_on_h = na, var label lbl_on_l = na
+var line line_w_h = na, var line line_w_l = na
+var label lbl_w_h = na, var label lbl_w_l = na
+var line line_m_h = na, var line line_m_l = na
+var label lbl_m_h = na, var label lbl_m_l = na
+var line line_q_h = na, var line line_q_l = na
+var label lbl_q_h = na, var label lbl_q_l = na
+
+if show_pc and not na(chart_prev_close) and not na(d_start)
+    line.delete(line_pc), label.delete(lbl_pc)
+    line_pc := line.new(d_start, chart_prev_close, time, chart_prev_close, xloc=xloc.bar_time, color=pc_color, width=pc_width, style=get_style(pc_style))
+    if show_labels
+        lbl_pc := label.new(time + (time_step * pc_offset), chart_prev_close, "P-C", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=pc_color, size=size.small)
+
+if show_on and not na(on_high) and not na(on_low)
+    line.delete(line_on_h), line.delete(line_on_l), label.delete(lbl_on_h), label.delete(lbl_on_l)
+    line_on_h := line.new(on_start, on_high, time, on_high, xloc=xloc.bar_time, color=on_h_color, width=on_h_width, style=get_style(on_h_style))
+    line_on_l := line.new(on_start, on_low,  time, on_low,  xloc=xloc.bar_time, color=on_l_color, width=on_l_width, style=get_style(on_l_style))
+    if show_labels
+        lbl_on_h := label.new(time + (time_step * on_h_offset), on_high, "ON-H", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=on_h_color, size=size.small)
+        lbl_on_l := label.new(time + (time_step * on_l_offset), on_low,  "ON-L", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=on_l_color, size=size.small)
+
+if show_w and not na(w_high) and not na(w_low)
+    line.delete(line_w_h), line.delete(line_w_l), label.delete(lbl_w_h), label.delete(lbl_w_l)
+    line_w_h := line.new(w_start, w_high, time, w_high, xloc=xloc.bar_time, color=w_h_color, width=w_h_width, style=get_style(w_h_style))
+    line_w_l := line.new(w_start, w_low,  time, w_low,  xloc=xloc.bar_time, color=w_l_color, width=w_l_width, style=get_style(w_l_style))
+    if show_labels
+        lbl_w_h := label.new(time + (time_step * w_h_offset), w_high, "W-H", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=w_h_color, size=size.small)
+        lbl_w_l := label.new(time + (time_step * w_l_offset), w_low,  "W-L", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=w_l_color, size=size.small)
+
+if show_m and not na(m_high) and not na(m_low)
+    line.delete(line_m_h), line.delete(line_m_l), label.delete(lbl_m_h), label.delete(lbl_m_l)
+    line_m_h := line.new(m_start, m_high, time, m_high, xloc=xloc.bar_time, color=m_h_color, width=m_h_width, style=get_style(m_h_style))
+    line_m_l := line.new(m_start, m_low,  time, m_low,  xloc=xloc.bar_time, color=m_l_color, width=m_l_width, style=get_style(m_l_style))
+    if show_labels
+        lbl_m_h := label.new(time + (time_step * m_h_offset), m_high, "M-H", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=m_h_color, size=size.small)
+        lbl_m_l := label.new(time + (time_step * m_l_offset), m_low,  "M-L", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=m_l_color, size=size.small)
+
+if show_q and not na(q_high) and not na(q_low)
+    line.delete(line_q_h), line.delete(line_q_l), label.delete(lbl_q_h), label.delete(lbl_q_l)
+    line_q_h := line.new(q_start, q_high, time, q_high, xloc=xloc.bar_time, color=q_h_color, width=q_h_width, style=get_style(q_h_style))
+    line_q_l := line.new(q_start, q_low,  time, q_low,  xloc=xloc.bar_time, color=q_l_color, width=q_l_width, style=get_style(q_l_style))
+    if show_labels
+        lbl_q_h := label.new(time + (time_step * q_h_offset), q_high, "Q-H", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=q_h_color, size=size.small)
+        lbl_q_l := label.new(time + (time_step * q_l_offset), q_low,  "Q-L", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=q_l_color, size=size.small)
+
+if show_ny_open and not na(sessionOpen)
+    label.delete(lbl_open)
+    if show_labels
+        lbl_open := label.new(time + (time_step * ny_open_offset), sessionOpen, "NY-O", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=ny_open_color, size=size.small)
+
+if show_ny_close and not na(sessionClose) and not na(line_close)
+    line.set_x2(line_close, time) 
+    label.delete(lbl_close) 
+    if show_labels
+        lbl_close := label.new(time + (time_step * ny_close_offset), sessionClose, "NY-C", xloc=xloc.bar_time, yloc=yloc.price, color=color.new(color.black, 100), style=label.style_label_left, textcolor=ny_close_color, size=size.small)
+
+//============================================================================
+// CORE 2: NXS OPT (PDH & PDL ONLY)
+//============================================================================
+is_new_session = ta.change(time("D")) != 0
+
+var float opt_current_high = na, var float opt_current_low = na
+var float opt_pd_high = na, var float opt_pd_low = na
+var int opt_pd_start_time = na
+
+if is_new_session
+    if not na(opt_current_high)
+        opt_pd_high  := opt_current_high
+        opt_pd_low   := opt_current_low
+    opt_current_high  := high
+    opt_current_low   := low
+    opt_pd_start_time := time
+else
+    opt_current_high  := math.max(nz(opt_current_high, high), high)
+    opt_current_low   := math.min(nz(opt_current_low, low), low)
+
+var line opt_ln_pdh = na, var label opt_lbl_pdh = na
+var line opt_ln_pdl = na, var label opt_lbl_pdl = na
+opt_future_lvl_time = time + (time_step * opt_label_off)
+
+if not na(opt_pd_start_time)
+    line.delete(opt_ln_pdh), label.delete(opt_lbl_pdh)
+    line.delete(opt_ln_pdl), label.delete(opt_lbl_pdl)
+
+    if opt_show_pdh and not na(opt_pd_high)
+        opt_ln_pdh := line.new(opt_pd_start_time, opt_pd_high, time, opt_pd_high, xloc=xloc.bar_time, color=opt_color_pdh, width=1, style=get_style(opt_line_style))
+        if show_labels
+            opt_lbl_pdh := label.new(opt_future_lvl_time, opt_pd_high, "PDH", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_left, color=color.new(color.black, 100), textcolor=opt_color_pdh, size=size.small)
+    if opt_show_pdl and not na(opt_pd_low)
+        opt_ln_pdl := line.new(opt_pd_start_time, opt_pd_low, time, opt_pd_low, xloc=xloc.bar_time, color=opt_color_pdl, width=1, style=get_style(opt_line_style))
+        if show_labels
+            opt_lbl_pdl := label.new(opt_future_lvl_time, opt_pd_low, "PDL", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_left, color=color.new(color.black, 100), textcolor=opt_color_pdl, size=size.small)
+
+
+//============================================================================
+// CORE 3: NXS SYMMETRY (PROJECTION LINES ONLY)
+//============================================================================
+sym_ny_h = hour(time, sym_tz)
+sym_ny_m = minute(time, sym_tz)
+sym_min_of_day = (sym_ny_h * 60) + sym_ny_m
+
+sym_rth_start_mins = f_hhmm_to_mins(sym_rth_start)
+sym_rth_end_mins   = f_hhmm_to_mins(sym_rth_end)
+sym_on_start_mins  = f_hhmm_to_mins(sym_on_start)
+sym_on_end_mins    = f_hhmm_to_mins(sym_on_end)
+
+sym_is_in_rth = f_in_window(sym_min_of_day, sym_rth_start_mins, sym_rth_end_mins)
+sym_is_in_on  = sym_use_on ? f_in_window(sym_min_of_day, sym_on_start_mins, sym_on_end_mins) : false
+sym_inSession = sym_is_in_rth or sym_is_in_on
+
+sym_chart_ticker = sym_use_eth ? ticker.modify(syminfo.tickerid, session.extended) : syminfo.tickerid
+sym_chart_rth_anchor = request.security(sym_chart_ticker, "1", f_get_liquid_anchor(sym_rth_start_mins, sym_rth_end_mins, sym_tz), barmerge.gaps_off, barmerge.lookahead_on)
+sym_chart_on_anchor  = request.security(sym_chart_ticker, "1", f_get_liquid_anchor(sym_on_start_mins, sym_on_end_mins, sym_tz), barmerge.gaps_off, barmerge.lookahead_on)
+sym_active_chart_anchor = sym_is_in_rth ? sym_chart_rth_anchor : (sym_is_in_on ? sym_chart_on_anchor : na)
+
+var float sym_line1_value = na
+var float sym_line2_value = na
+
+if sym_htf1_en
+    sym_symbol1 = sym_htf1_sym != "" ? sym_htf1_sym : syminfo.tickerid
+    sym_sym1_ticker = sym_use_eth ? ticker.modify(sym_symbol1, session.extended) : sym_symbol1
+    sym_c1 = request.security(sym_sym1_ticker, sym_htf1_tf, close, barmerge.gaps_off, barmerge.lookahead_off)
+    
+    sym_proj_rth1 = sym_htf1_sym != "" ? request.security(sym_sym1_ticker, "1", f_get_liquid_anchor(sym_rth_start_mins, sym_rth_end_mins, sym_tz), barmerge.gaps_off, barmerge.lookahead_on) : na
+    sym_proj_on1  = sym_htf1_sym != "" ? request.security(sym_sym1_ticker, "1", f_get_liquid_anchor(sym_on_start_mins, sym_on_end_mins, sym_tz), barmerge.gaps_off, barmerge.lookahead_on) : na
+    sym_active_proj1 = sym_is_in_rth ? sym_proj_rth1 : (sym_is_in_on ? sym_proj_on1 : na)
+    
+    sym_c1_scaled = sym_htf1_sym != "" ? scale_price(sym_c1, sym_active_proj1, sym_active_chart_anchor, sym_htf1_mult) : sym_c1
+    sym_line1_value := sym_inSession ? sym_c1_scaled : na
+
+if sym_htf2_en
+    sym_symbol2 = sym_htf2_sym != "" ? sym_htf2_sym : syminfo.tickerid
+    sym_sym2_ticker = sym_use_eth ? ticker.modify(sym_symbol2, session.extended) : sym_symbol2
+    sym_c2 = request.security(sym_sym2_ticker, sym_htf2_tf, close, barmerge.gaps_off, barmerge.lookahead_off)
+    
+    sym_proj_rth2 = sym_htf2_sym != "" ? request.security(sym_sym2_ticker, "1", f_get_liquid_anchor(sym_rth_start_mins, sym_rth_end_mins, sym_tz), barmerge.gaps_off, barmerge.lookahead_on) : na
+    sym_proj_on2  = sym_htf2_sym != "" ? request.security(sym_sym2_ticker, "1", f_get_liquid_anchor(sym_on_start_mins, sym_on_end_mins, sym_tz), barmerge.gaps_off, barmerge.lookahead_on) : na
+    sym_active_proj2 = sym_is_in_rth ? sym_proj_rth2 : (sym_is_in_on ? sym_proj_on2 : na)
+    
+    sym_c2_scaled = sym_htf2_sym != "" ? scale_price(sym_c2, sym_active_proj2, sym_active_chart_anchor, sym_htf2_mult) : sym_c2
+    sym_line2_value := sym_inSession ? sym_c2_scaled : na
+
+plot(sym_htf1_en ? sym_line1_value : na, "Symmetry Slot 1", color=sym_line1_col, linewidth=sym_line_w, style=plot.style_linebr)
+plot(sym_htf2_en ? sym_line2_value : na, "Symmetry Slot 2", color=sym_line2_col, linewidth=sym_line_w, style=plot.style_linebr)
